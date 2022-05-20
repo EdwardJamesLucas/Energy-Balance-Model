@@ -1,3 +1,7 @@
+# Energy Balance Model
+# Edward James Lucas 2022
+# .\.venv\Scripts\activate
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
