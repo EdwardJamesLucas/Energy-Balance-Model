@@ -100,7 +100,6 @@ class StorageCalculator:
     def calc_charging_enthalpy(self, tstep):
         if self.sd.charging:
             if self.sd.charged_with_pvt:
-                print("PVT CHARGE!",kelvin_to_celsius(self.sd.sl_temps[-1]),self.sysmed.pvt_temp_lift[tstep], min(kelvin_to_celsius(self.sd.sl_temps[-1]) + self.sysmed.pvt_temp_lift[tstep], self.sd.charging_temp))
                 self.sd.charging_enthalpy = np.array(
                     [self.sd.charging_mass * WATER_HEAT_CAPACITY * celsius_to_kelvin(min(kelvin_to_celsius(self.sd.sl_temps[-1]) + self.sysmed.pvt_temp_lift[tstep], self.sd.charging_temp))]
                 )
@@ -350,10 +349,10 @@ class HouseCalculator:
 
 class SysMediator:
     def __init__(self, df):
-        self.storage_is_included = True  # df.storage_is_included[0]
-        self.pvt_is_included = True  # df.pvt_is_included[0]
-        self.house_is_included = True  # df.house_is_included[0]
-        self.pvt_charges_storage = True  # df.pvt_charges_storage[0]
+        self.storage_is_included = df.storage_is_included[0]
+        self.pvt_is_included = df.pvt_is_included[0]
+        self.house_is_included = df.house_is_included[0]
+        self.pvt_charges_storage = df.pvt_charges_storage[0]
 
 
 def main():
@@ -394,9 +393,9 @@ def main():
 
     # dummy variable representing enthalpy passed to(+ve)/from(-ve) storage
     recieved_enthalpy = (
-        [0 for x in range(int(storage_data.no_of_time_steps / 4))]
+        [1 for x in range(int(storage_data.no_of_time_steps / 4))]
         + [1 for x in range(int(storage_data.no_of_time_steps / 2))]
-        + [0 for x in range(int(storage_data.no_of_time_steps / 4))]
+        + [1 for x in range(int(storage_data.no_of_time_steps / 4))]
     )
 
     for tstep in range(storage_data.no_of_time_steps):
@@ -410,15 +409,9 @@ def main():
         sc.reorder_layer_temps()
         sc.record_layer_temps(tstep)
 
-    # print(
-    #     f"Average top layer temperature across year: {storage_data.sl_temps_across_time[:, 0].mean()} degrees Celsius"
-    # )
-    # print(
-    #     f"Average bottom layer temperature across year: {storage_data.sl_temps_across_time[:, -1].mean()} degrees Celsius"
-    # )
-    # print(
-    #     f"Average total storage temperature across year: {storage_data.sl_temps_across_time[:].mean()} degrees Celsius"
-    # )
+
+    plt.plot(recieved_enthalpy)
+    plt.show()
     plt.plot(storage_data.sl_temps_across_time)
     plt.plot(ambient_air_temps)
     plt.show()
