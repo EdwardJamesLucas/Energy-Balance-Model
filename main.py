@@ -48,7 +48,6 @@ class StorageData:
         self.discharged_by_house = SysMediator.house_discharges_storage
 
 
-
 class StorageCalculator:
     def __init__(self, StorageData, SysMediator):
         self.sd = StorageData
@@ -88,7 +87,8 @@ class StorageCalculator:
 
     def calc_init_enthalpies(self):
         self.sd.sl_enthalpy = (
-            np.array([(self.sd.sl_mass * WATER_HEAT_CAPACITY) for x in range(self.sd.no_of_layers)]) * self.sd.sl_temps
+            np.array([(self.sd.sl_mass[x] * WATER_HEAT_CAPACITY) for x in range(self.sd.no_of_layers)])
+            * self.sd.sl_temps
         )
         self.sd.sl_enthalpy_added = np.array([x for x in range(self.sd.no_of_layers)], dtype=np.float64)
         self.sd.sl_enthalpy_rest = np.array([x for x in range(self.sd.no_of_layers)], dtype=np.float64)
@@ -101,11 +101,13 @@ class StorageCalculator:
 
     def is_charging(self, received_enthalpy):
         if received_enthalpy > 0:
-            self.sd.charging = True
-        else:
-            self.sd.charging = False
+            return True
 
-    def calc_charging_enthalpy(self, tstep):
+    def is_discharging(self, discharging_mass):
+        if discharging_mass > 0:
+            return True
+
+    def calc_charging_enthalpy(self, charging_temp_lift):
         if self.sd.charged_by_pvt:
             self.sd.charging_enthalpy = np.array(
                 [
@@ -113,7 +115,7 @@ class StorageCalculator:
                     * WATER_HEAT_CAPACITY
                     * celsius_to_kelvin(
                         min(
-                            kelvin_to_celsius(self.sd.sl_temps[-1]) + self.sysmed.pvt_temp_lift_hourly_avg[tstep],
+                            kelvin_to_celsius(self.sd.sl_temps[-1]) + charging_temp_lift,
                             self.sd.charging_temp,
                         )
                     )
@@ -124,7 +126,7 @@ class StorageCalculator:
                 [self.sd.charging_mass * WATER_HEAT_CAPACITY * celsius_to_kelvin(self.sd.charging_temp)]
             )
 
-    def calc_discharging_enthalpy(self, tstep):
+    def calc_discharging_enthalpy(self, discharging_temp_reduction):
         if self.sd.discharged_by_house:
             pass
         else:
@@ -134,7 +136,7 @@ class StorageCalculator:
                     * WATER_HEAT_CAPACITY
                     * max(
                         celsius_to_kelvin(self.sd.discharging_min_return_water_temp),
-                        (self.sd.sl_temps[0] - self.sd.discharging_temp_reduction),
+                        (self.sd.sl_temps[0] - discharging_temp_reduction),
                     )
                 ]
             )
@@ -142,23 +144,27 @@ class StorageCalculator:
     def record_layer_temps(self, tstep):
         self.sd.sl_temps_across_time[tstep, :] = kelvin_to_celsius(self.sd.sl_temps)
 
-    def calc_layer_enthalpy_after_charging(self):
+    def calc_layer_enthalpy_change_charging(self):
         for i, (av, bv) in enumerate(zip(self.sd.sl_mass, self.sd.sl_temps)):
             self.sd.sl_enthalpy_added[i] = self.sd.charging_mass * bv * WATER_HEAT_CAPACITY
             self.sd.sl_enthalpy_rest[i] = (av - self.sd.charging_mass) * bv * WATER_HEAT_CAPACITY
 
-        self.sd.sl_enthalpy = (
-            np.concatenate([self.sd.charging_enthalpy, self.sd.sl_enthalpy_added[:-1]])
-        ) + self.sd.sl_enthalpy_rest
+        self.sd.sl_enthalpy_change_charging = (
+            (np.concatenate([self.sd.charging_enthalpy, self.sd.sl_enthalpy_added[:-1]]))
+            + self.sd.sl_enthalpy_rest
+            - self.sd.sl_enthalpy
+        )
 
-    def calc_layer_enthalpy_after_discharging(self):
+    def calc_layer_enthalpy_change_discharging(self):
         for i, (av, bv) in enumerate(zip(self.sd.sl_mass, self.sd.sl_temps)):
             self.sd.sl_enthalpy_added[i] = self.sd.discharging_mass * bv * WATER_HEAT_CAPACITY
             self.sd.sl_enthalpy_rest[i] = (av - self.sd.discharging_mass) * bv * WATER_HEAT_CAPACITY
 
-        self.sd.sl_enthalpy = (
-            np.concatenate([self.sd.sl_enthalpy_added[1:], self.sd.discharging_enthalpy])
-        ) + self.sd.sl_enthalpy_rest
+        self.sd.sl_enthalpy_change_discharging = (
+            (np.concatenate([self.sd.sl_enthalpy_added[1:], self.sd.discharging_enthalpy]))
+            + self.sd.sl_enthalpy_rest
+            - self.sd.sl_enthalpy
+        )
 
     def calc_layer_losses(self):
         self.sd.sl_enthalpy_losses = (
@@ -185,10 +191,17 @@ class StorageCalculator:
             * self.sd.time_step
         )
 
-    def calc_layer_temps(self):
-        self.sd.sl_temps = (self.sd.sl_enthalpy + self.sd.sl_enthalpy_losses + self.sd.sl_enthalpy_conduction) / (
-            self.sd.sl_mass * WATER_HEAT_CAPACITY
+    def calc_layer_enthalpy(self):
+        self.sd.sl_enthalpy = (
+            self.sd.sl_enthalpy
+            + self.sd.sl_enthalpy_change_charging
+            + self.sd.sl_enthalpy_change_discharging
+            + self.sd.sl_enthalpy_losses
+            + self.sd.sl_enthalpy_conduction
         )
+
+    def calc_layer_temps(self):
+        self.sd.sl_temps = (self.sd.sl_enthalpy) / (self.sd.sl_mass * WATER_HEAT_CAPACITY)
 
     def reorder_layer_temps(self):
         self.sd.sl_temps = np.sort(self.sd.sl_temps)[::-1]
@@ -341,7 +354,11 @@ class PVTCalculator:
         self.pvt.solar_temp_lift = self.pvt.solar_enthalpy / (
             self.pvt.massflow * self.pvt.time_step * WATER_HEAT_CAPACITY
         )
-        self.pvt.solar_temp_lift_hourly_avg = np.repeat((np.sum(self.pvt.solar_enthalpy.reshape(365,24), 1)/24) / (self.pvt.massflow * self.pvt.time_step * WATER_HEAT_CAPACITY * 24), 24)
+        self.pvt.solar_temp_lift_hourly_avg = np.repeat(
+            (np.sum(self.pvt.solar_enthalpy.reshape(365, 24), 1) / 24)
+            / (self.pvt.massflow * self.pvt.time_step * WATER_HEAT_CAPACITY),
+            24,
+        )
 
     def push_to_sysmed(self):
         self.sysmed.pvt_temp_lift = self.pvt.solar_temp_lift
@@ -357,8 +374,9 @@ class HouseData:
 
 
 class HouseCalculator:
-    def __init__(self, house_data):
-        self.hd = house_data
+    def __init__(self, HouseData, SysMediator):
+        self.hd = HouseData
+        self.sysmed = SysMediator
 
     def calc_heating(self, ambient_air_temps):
         self.hd.temp_grad = np.array([max(0, x) for x in self.hd.target_temp - ambient_air_temps])
@@ -368,6 +386,11 @@ class HouseCalculator:
         )
         self.hd.heating_enthalpy = self.hd.heating * 3600
 
+    def calc_heating_temp_drop(self):
+        self.hd.heating_temp_drop = self.hd.heating_enthalpy / (
+            self.sysmed.house_massflow * self.sysmed.time_step * WATER_HEAT_CAPACITY
+        )
+
 
 class SysMediator:
     def __init__(self, df):
@@ -376,6 +399,10 @@ class SysMediator:
         self.house_is_included = df.house_is_included[0]
         self.pvt_charges_storage = df.pvt_charges_storage[0]
         self.house_discharges_storage = df.house_discharges_storage[0]
+        self.city = df.city[0]
+        self.no_of_time_steps = df.no_of_time_steps[0]
+        self.house_massflow = 0.02
+        self.time_step = 3600
 
 
 def main():
@@ -386,16 +413,24 @@ def main():
     system_mediator = SysMediator(read_variables("GUI.xlsx", "mediator_data"))
     if system_mediator.pvt_charges_storage:
         print(f"PVT is charging Storage")
+    sm = system_mediator
+
+    ambient_air_temps = np.array(climate_data[sm.city].TAir)
+    irradiance_direct_norm = np.array(climate_data[sm.city].IDirNorm)
+    irradiance_diffuse_horiz = np.array(climate_data[sm.city].IDiffHor)
+    timesteps = np.array([x + 1 for x in range(sm.no_of_time_steps)])
+
+    house_data = HouseData(read_variables("GUI.xlsx", "house_data"))
+    house_calculations = HouseCalculator(house_data, system_mediator)
+    hc = house_calculations
+    hc.calc_heating(ambient_air_temps)
+    hc.calc_heating_temp_drop()
+    print(house_data.heating_temp_drop)
 
     df = read_variables("GUI.xlsx", "storage_data")
     storage_data = StorageData(df, system_mediator)
     storage_calculations = StorageCalculator(storage_data, system_mediator)
     sc = storage_calculations
-
-    ambient_air_temps = np.array(climate_data[df.city[0]].TAir)
-    irradiance_direct_norm = np.array(climate_data[df.city[0]].IDirNorm)
-    irradiance_diffuse_horiz = np.array(climate_data[df.city[0]].IDiffHor)
-    timesteps = np.array([x + 1 for x in range(df.no_of_time_steps[0])])
 
     pvt_data = PVTData()
     pvt_calculations = PVTCalculator(pvt_data, system_mediator)
@@ -409,35 +444,29 @@ def main():
     pvtc.calc_solar_temp_lift()
     pvtc.push_to_sysmed()
 
-    house_data = HouseData(read_variables("GUI.xlsx", "house_data"))
-    house_calculations = HouseCalculator(house_data)
-    hc = house_calculations
-    hc.calc_heating(ambient_air_temps)
+    for tstep in range(sm.no_of_time_steps):
 
-    # dummy variable representing enthalpy passed to(+ve)/from(-ve) storage
-    recieved_enthalpy = (
-        [1 for x in range(int(storage_data.no_of_time_steps / 4))]
-        + [1 for x in range(int(storage_data.no_of_time_steps / 2))]
-        + [1 for x in range(int(storage_data.no_of_time_steps / 4))]
-    )
+        # if sc.is_charging(sm.pvt_temp_lift_hourly_avg[tstep]):
+        sc.calc_charging_enthalpy(sm.pvt_temp_lift_hourly_avg[tstep])
+        sc.calc_layer_enthalpy_change_charging()
 
-    for tstep in range(storage_data.no_of_time_steps):
-        sc.is_charging(recieved_enthalpy[tstep])
-        sc.calc_charging_enthalpy(tstep)
-        sc.calc_layer_enthalpy_after_charging()
-        sc.calc_discharging_enthalpy(tstep)
-        sc.calc_layer_enthalpy_after_discharging()
+        # if sc.is_discharging(storage_data.discharging_mass):
+        sc.calc_discharging_enthalpy(storage_data.discharging_temp_reduction)
+        sc.calc_layer_enthalpy_change_discharging()
+
         sc.grab_air_temp(ambient_air_temps, tstep)
         sc.calc_layer_losses()
         sc.calc_layer_conduction()
+        sc.calc_layer_enthalpy()
         sc.calc_layer_temps()
         sc.reorder_layer_temps()
         sc.record_layer_temps(tstep)
 
-    plt.plot(recieved_enthalpy)
-    plt.show()
     plt.plot(storage_data.sl_temps_across_time)
-    plt.plot(ambient_air_temps)
+    plt.title(f"Hourly layer temperatures: {sm.city}")
+    plt.xlabel("Time (hrs)")
+    plt.ylabel("Layer temperature (degC)")
+    # plt.plot(ambient_air_temps)
     plt.show()
 
 
