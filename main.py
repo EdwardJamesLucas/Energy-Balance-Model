@@ -391,6 +391,9 @@ class HouseCalculator:
             self.sysmed.house_massflow * self.sysmed.time_step * WATER_HEAT_CAPACITY
         )
 
+    def push_to_sysmed(self):
+        self.sysmed.house_temp_drop = self.hd.heating_temp_drop
+
 
 class SysMediator:
     def __init__(self, df):
@@ -425,7 +428,7 @@ def main():
     hc = house_calculations
     hc.calc_heating(ambient_air_temps)
     hc.calc_heating_temp_drop()
-    print(house_data.heating_temp_drop)
+    hc.push_to_sysmed()
 
     df = read_variables("GUI.xlsx", "storage_data")
     storage_data = StorageData(df, system_mediator)
@@ -451,7 +454,7 @@ def main():
         sc.calc_layer_enthalpy_change_charging()
 
         # if sc.is_discharging(storage_data.discharging_mass):
-        sc.calc_discharging_enthalpy(storage_data.discharging_temp_reduction)
+        sc.calc_discharging_enthalpy(sm.house_temp_drop[tstep])
         sc.calc_layer_enthalpy_change_discharging()
 
         sc.grab_air_temp(ambient_air_temps, tstep)
