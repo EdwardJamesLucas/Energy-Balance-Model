@@ -559,6 +559,7 @@ class WeatherData:
 def main():
     """Main Function"""
 
+    # Pulling the data and setting up the data and calculator objects.
     house_data = HouseData(read_variables("GUI.xlsx", "house_data"))
     house_calculations = HouseCalculator(house_data)
 
