@@ -548,7 +548,7 @@ class WeatherData:
         self.irradiance_direct_norm: None
         self.irradiance_diffuse_horiz: None
 
-        with open("climate_data.pickle", "rb") as file:
+        with open("data/climate_data.pickle", "rb") as file:
             climate_data = pickle.load(file)
 
         self.ambient_air_temps = np.array(climate_data[city].TAir)
