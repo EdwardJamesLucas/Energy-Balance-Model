@@ -37,9 +37,9 @@ class StorageData:
     def __init__(self, df):
         self.tank_height = df.tank_height[0]
         self.tank_footprint = df.tank_footprint[0]
-        self.no_of_layers = df.no_of_layers[0]
-        self.time_step = df.time_step[0]
-        self.no_of_time_steps = df.no_of_time_steps[0]
+        self.no_of_layers = int(df.no_of_layers[0])
+        self.time_step = int(df.time_step[0])
+        self.no_of_time_steps = int(df.no_of_time_steps[0])
         self.tank_u_value = df.tank_u_value[0]
         self.charging_massflow = df.charging_massflow[0]
         self.discharging_massflow = df.discharging_massflow[0]
@@ -117,7 +117,8 @@ class StorageCalculator:
         self.sd.charging_mass = massflow * time_step
 
     def set_discharging_mass(self, massflow=0, time_step=0):
-        self.sd.discharging_mass = massflow * time_step
+        self.sd.discharging_massflow = massflow
+        self.sd.discharging_mass = self.sd.discharging_massflow * time_step
 
     def charge_storage(self):
         """SHOULD THIS METHOD BE GENERIC? AND ABLE TO SET CHARING ENTHALPY EQUAL TO 0"""
@@ -144,29 +145,17 @@ class StorageCalculator:
                 [self.sd.charging_mass * WATER_HEAT_CAPACITY * celsius_to_kelvin(self.sd.charging_temp)]
             )
 
-    def calc_discharging_enthalpy(self, discharging_temp_reduction: float, discharged_by_house: bool):
-        if discharged_by_house:
-            self.sd.discharging_enthalpy = np.array(
-                [
-                    self.sd.discharging_mass
-                    * WATER_HEAT_CAPACITY
-                    * max(
-                        celsius_to_kelvin(self.sd.discharging_min_return_water_temp),
-                        (self.sd.sl_temps[0] - discharging_temp_reduction),
-                    )
-                ]
-            )
-        else:
-            self.sd.discharging_enthalpy = np.array(
-                [
-                    self.sd.discharging_mass
-                    * WATER_HEAT_CAPACITY
-                    * max(
-                        celsius_to_kelvin(self.sd.discharging_min_return_water_temp),
-                        (self.sd.sl_temps[0] - self.sd.discharging_temp_reduction),
-                    )
-                ]
-            )
+    def calc_discharging_enthalpy(self, discharging_temp_reduction: float):
+        self.sd.discharging_enthalpy = np.array(
+            [
+                self.sd.discharging_mass
+                * WATER_HEAT_CAPACITY
+                * max(
+                    celsius_to_kelvin(self.sd.discharging_min_return_water_temp),
+                    (self.sd.sl_temps[0] - discharging_temp_reduction),
+                )
+            ]
+        )
 
     def record_layer_temps(self, tstep):
         self.sd.sl_temps_across_time[tstep, :] = kelvin_to_celsius(self.sd.sl_temps)
@@ -443,7 +432,9 @@ class HouseCalculator:
         self.hd.heating = (
             self.hd.heating_demand * 1000 * self.hd.footprint * (self.hd.temp_grad / self.hd.summed_temp_grad)
         )
-        self.hd.heating_enthalpy = self.hd.heating * 3600 * self.hd.autarky_thermal
+        self.hd.heating_enthalpy = (
+            self.hd.heating * 3600 * self.hd.autarky_thermal
+        )  # here should be *1000 to get into joules
 
     def calc_heating_mass_flow(self, time_step):
         """Calculator method for determining massflow of circulated HTF."""
@@ -470,6 +461,7 @@ class SysMediator:
         self.time_step = df.time_step[0]
         self.time_steps = np.array([x + 1 for x in range(self.no_of_time_steps)])
 
+        # Energy balance validation starting values
         self.validation_storage_eb_losses = 0
         self.validation_storage_eb_discharged = 0
         self.validation_storage_eb_charged = 0
@@ -487,31 +479,40 @@ class SysMediator:
         if self.house_discharges_storage:
             print("House is discharging storage when able")
 
-    def energy_balance_storage(self, ambient_temps, tstep):
-        """Energy balance across storage to calculate new layer temperatures."""
-
-        # charge storage if htf in pvt is hot enough, otherwise recirculate htf in pvt. REFECTOR INTO SEPARATE METHOD
-
-        self.sc.sd.sl_enthalpy_change_charging = 0
-        self.sc.sd.sl_enthalpy_change_discharging = 0
-
-        if self.pvtc.check_htf_temp(self.sc.sd.sl_temps[0], tstep) and self.pvt_charges_storage:
+    def charge_storage_with_pvt(self, tstep):
+        """Charges storage if HTF is hotter than top layer temperature; otherwise recirculates HTF"""
+        if self.pvtc.check_htf_temp(self.sc.sd.sl_temps[0], tstep):
             self.sc.set_charging_mass(self.pvtc.pvt.massflow, self.time_step)
             self.sc.charge_storage()
             self.pvtc.replenish_htf(self.sc.sd.sl_temps[-1])
             self.sc.calc_layer_enthalpy_change_charging()
-        elif self.pvt_charges_storage:
+        else:
             self.pvtc.reciruclate_htf(tstep)
             self.sc.set_charging_mass()
             self.sc.charge_storage()
 
-        # discharging method. REFACTOR INTO SEPARATE METHOD
-        if self.hc.hd.heating_enthalpy[tstep]:
-            self.sc.set_discharging_mass(self.hc.hd.massflow[tstep], self.time_step)
-            self.sc.calc_discharging_enthalpy(self.hc.hd.temp_drop, self.house_discharges_storage)
-            self.sc.calc_layer_enthalpy_change_discharging()
+    def discharge_storage_with_house(self, tstep):
+        """Method to discharge storage using current massflow to, and temperature drop across, House"""
+        self.sc.set_discharging_mass(self.hc.hd.massflow[tstep], self.time_step)
+        self.sc.calc_discharging_enthalpy(self.hc.hd.temp_drop)
+        self.sc.calc_layer_enthalpy_change_discharging()
 
-        # energy balance THIS SHOULD BE THE ONLY PART IN THIS METHOD
+    def energy_balance_storage(self, ambient_temps, tstep):
+        """Conduct energy balance across storage to calculate new layer temperatures."""
+
+        # Set default charging and discharging values to 0
+        self.sc.sd.sl_enthalpy_change_charging = np.array([0])
+        self.sc.sd.sl_enthalpy_change_discharging = np.array([0])
+
+        # Charging of storage
+        if self.pvt_charges_storage:
+            self.charge_storage_with_pvt(tstep)
+
+        # Discharging of storage
+        if self.house_discharges_storage:
+            self.discharge_storage_with_house(tstep)
+
+        # Calculate energy balance
         self.sc.calc_layer_losses(ambient_temps[tstep])
         self.sc.calc_layer_conduction()
         self.sc.calc_layer_enthalpy()
@@ -535,9 +536,10 @@ class SysMediator:
         self.sc.record_layer_temps(tstep)
 
     def validate_energy_balance(self):
+        "Temporary helper method to keep track of energy balance"
         self.validation_storage_eb_losses += sum(self.sc.sd.sl_enthalpy_losses)
-        self.validation_storage_eb_charged += sum(self.sc.sd.charging_enthalpy)
-        self.validation_storage_eb_discharged += sum(self.sc.sd.discharging_enthalpy)
+        self.validation_storage_eb_charged += sum(self.sc.sd.sl_enthalpy_change_charging)
+        self.validation_storage_eb_discharged += sum(self.sc.sd.sl_enthalpy_change_discharging)
 
 
 class WeatherData:
@@ -580,31 +582,37 @@ def main():
 
     system_mediator.energy_balance_pvt(weather_data.irradiance_direct_norm, weather_data.irradiance_diffuse_horiz)
     system_mediator.energy_balance_house(weather_data.ambient_air_temps)
-    print(max(house_data.massflow))
+    print(f" Max massflow to house from storage: {round(max(house_data.massflow), 4)} kg/s")
 
     for tstep in range(system_mediator.no_of_time_steps):
 
         system_mediator.energy_balance_storage(weather_data.ambient_air_temps, tstep)
         system_mediator.record_sl_temps(tstep)
         system_mediator.validate_energy_balance()
-        print(
-            f"{storage_data.charging_enthalpy/3600000} kWh charged.",
-            f"{storage_data.discharging_enthalpy/3600000} kWh discharged.",
-            f"{storage_data.charging_mass} in, {storage_data.discharging_mass} out",
-            f"{max(celsius_to_kelvin(storage_data.discharging_min_return_water_temp),(storage_data.sl_temps[0] - 25))}",
-        )
 
-    plt.plot(storage_data.sl_temps_across_time)
-    plt.title(f"Hourly layer temperatures: {system_mediator.city}")
-    plt.xlabel("Time (hrs)")
-    plt.ylabel("Layer temperature (degC)")
-    # plt.plot(ambient_air_temps)
-    plt.show()
+        print_out = False
+        if print_out:
+            print(
+                f"{round(sum(storage_data.sl_enthalpy_change_charging)/3600000, 1)} kWh charged.",
+                f"{round(sum(storage_data.sl_enthalpy_change_discharging)/3600000, 1)} kWh discharged.",
+                f"{round(storage_data.charging_mass, 1)} mass in, {round(storage_data.discharging_mass, 1)} mass out.",
+                f"Lowest return temp: {round(max(celsius_to_kelvin(storage_data.discharging_min_return_water_temp),(storage_data.sl_temps[0] - 25)), 1)}",
+            )
+
+    show_plot = True
+    if show_plot:
+        plt.plot(storage_data.sl_temps_across_time)
+        plt.title(f"Hourly layer temperatures: {system_mediator.city}")
+        plt.xlabel("Time (hrs)")
+        plt.ylabel("Layer temperature (degC)")
+        plt.show()
 
     print(
-        f"{system_mediator.validation_storage_eb_losses/3600000} kWh losses.",
-        f"{system_mediator.validation_storage_eb_discharged/3600000} kWh discharged.",
-        f"{system_mediator.validation_storage_eb_charged/3600000} kWh charged.",
+        f"{round(system_mediator.validation_storage_eb_losses/3600000)} kWh Storage losses.",
+        f"{round(system_mediator.validation_storage_eb_discharged/3600000)} kWh discharged.",
+        f"{round(system_mediator.validation_storage_eb_charged/3600000)} kWh charged.",
+        f"{round((system_mediator.validation_storage_eb_charged+system_mediator.validation_storage_eb_losses+system_mediator.validation_storage_eb_discharged)/3600000)} kWh Difference.",
+        f"Average Tank Temp: {round(np.mean(storage_data.sl_temps_across_time),1)}",
     )
 
     # Check energy balance across storage and report on feasibility of autarky
