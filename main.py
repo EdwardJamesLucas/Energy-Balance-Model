@@ -81,7 +81,6 @@ class StorageCalculator:
             print("Discharging empties entire storage layer within a single time step, could be problematic")
 
     def calc_init_temps(self):
-        self.sd.sl_temps_across_time = np.ones((self.sd.no_of_time_steps, self.sd.no_of_layers))
         if self.sd.initially_charged:
             self.sd.sl_temps = np.array(
                 [celsius_to_kelvin(self.sd.init_charging_temp) for x in range(self.sd.no_of_layers)]
@@ -146,6 +145,10 @@ class StorageCalculator:
             )
 
     def calc_discharging_enthalpy(self, discharging_temp_reduction: float):
+        if celsius_to_kelvin(self.sd.discharging_min_return_water_temp) > (
+            self.sd.sl_temps[0] - discharging_temp_reduction
+        ):
+            print("Boiler heats return water")
         self.sd.discharging_enthalpy = np.array(
             [
                 self.sd.discharging_mass
@@ -157,8 +160,11 @@ class StorageCalculator:
             ]
         )
 
-    def record_layer_temps(self, tstep):
-        self.sd.sl_temps_across_time[tstep, :] = kelvin_to_celsius(self.sd.sl_temps)
+    def record_layer_temps_init(self, repetition_period):
+        self.sd.sl_temps_across_time = np.ones((repetition_period, self.sd.no_of_time_steps, self.sd.no_of_layers))
+
+    def record_layer_temps(self, tstep, repetition_period):
+        self.sd.sl_temps_across_time[repetition_period, tstep, :] = kelvin_to_celsius(self.sd.sl_temps)
 
     def calc_layer_enthalpy_change_charging(self):
         for i, (av, bv) in enumerate(zip(self.sd.sl_mass, self.sd.sl_temps)):
@@ -458,6 +464,7 @@ class SysMediator:
         self.house_discharges_storage = df.house_discharges_storage[0]
         self.city = df.city[0]
         self.no_of_time_steps = df.no_of_time_steps[0]
+        self.repetition_period = df.repetition_period[0]
         self.time_step = df.time_step[0]
         self.time_steps = np.array([x + 1 for x in range(self.no_of_time_steps)])
 
@@ -470,6 +477,7 @@ class SysMediator:
         self.pvtc = pvt_calculator
         self.hc = house_calculator
 
+        self.record_sl_temps_init(self.repetition_period)
         self.print_system_layout()
 
     def print_system_layout(self):
@@ -531,9 +539,13 @@ class SysMediator:
         self.hc.calc_heating(weather_data)
         self.hc.calc_heating_mass_flow(self.time_step)
 
-    def record_sl_temps(self, tstep):
+    def record_sl_temps_init(self, repetition_period):
+        """Helper function to initialise arrays for recording storage layer temperatures for plotting."""
+        self.sc.record_layer_temps_init(repetition_period)
+
+    def record_sl_temps(self, tstep, repetition_period):
         """Helper function to record storage layer temperatures of current time step for plotting."""
-        self.sc.record_layer_temps(tstep)
+        self.sc.record_layer_temps(tstep, repetition_period)
 
     def validate_energy_balance(self):
         "Temporary helper method to keep track of energy balance"
@@ -584,24 +596,41 @@ def main():
     system_mediator.energy_balance_house(weather_data.ambient_air_temps)
     print(f" Max massflow to house from storage: {round(max(house_data.massflow), 4)} kg/s")
 
-    for tstep in range(system_mediator.no_of_time_steps):
+    for repetition_period in range(system_mediator.repetition_period):
+        for tstep in range(system_mediator.no_of_time_steps):
 
-        system_mediator.energy_balance_storage(weather_data.ambient_air_temps, tstep)
-        system_mediator.record_sl_temps(tstep)
-        system_mediator.validate_energy_balance()
+            system_mediator.energy_balance_storage(weather_data.ambient_air_temps, tstep)
+            system_mediator.record_sl_temps(tstep, repetition_period)
+            system_mediator.validate_energy_balance()
 
-        print_out = False
-        if print_out:
-            print(
-                f"{round(sum(storage_data.sl_enthalpy_change_charging)/3600000, 1)} kWh charged.",
-                f"{round(sum(storage_data.sl_enthalpy_change_discharging)/3600000, 1)} kWh discharged.",
-                f"{round(storage_data.charging_mass, 1)} mass in, {round(storage_data.discharging_mass, 1)} mass out.",
-                f"Lowest return temp: {round(max(celsius_to_kelvin(storage_data.discharging_min_return_water_temp),(storage_data.sl_temps[0] - 25)), 1)}",
-            )
+            print_out = False
+            if print_out:
+                print(
+                    f"{round(sum(storage_data.sl_enthalpy_change_charging)/3600000, 1)} kWh charged.",
+                    f"{round(sum(storage_data.sl_enthalpy_change_discharging)/3600000, 1)} kWh discharged.",
+                    f"{round(storage_data.charging_mass, 1)} mass in, {round(storage_data.discharging_mass, 1)} mass out.",
+                    f"Lowest return temp: {round(max(celsius_to_kelvin(storage_data.discharging_min_return_water_temp),(storage_data.sl_temps[0] - 25)), 1)}",
+                )
 
     show_plot = True
     if show_plot:
-        plt.plot(storage_data.sl_temps_across_time)
+        values = np.zeros(
+            (system_mediator.no_of_time_steps * system_mediator.repetition_period, storage_data.no_of_layers)
+        )
+        for repetition_period in range(system_mediator.repetition_period):
+            values[
+                (0 + system_mediator.no_of_time_steps * repetition_period) : (
+                    system_mediator.no_of_time_steps + system_mediator.no_of_time_steps * (repetition_period)
+                ),
+                :,
+            ] = storage_data.sl_temps_across_time[
+                repetition_period,
+                :,
+                :,
+            ]
+
+        plt.plot(values)
+
         plt.title(f"Hourly layer temperatures: {system_mediator.city}")
         plt.xlabel("Time (hrs)")
         plt.ylabel("Layer temperature (degC)")
