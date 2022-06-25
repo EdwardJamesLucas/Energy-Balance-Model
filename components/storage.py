@@ -33,6 +33,7 @@ class StorageData:
         self.sl_temps: None
         self.sl_temps_across_time: None
         self.boiler_needed = False
+        self.boiler_needed_at_equilibrium = False
 
 
 class StorageCalculator:
@@ -49,10 +50,12 @@ class StorageCalculator:
         self.calc_losses_area()
 
     def calc_init_dimensions(self):
+        """Calculate tank height and diameter"""
         self.sd.sl_height = self.sd.tank_height / self.sd.no_of_layers
         self.sd.sl_diameter = math.sqrt(4 * self.sd.tank_footprint / math.pi)
 
     def calc_init_masses(self):
+        """Calculate layer mass"""
         self.sd.sl_mass = np.array(
             [self.sd.sl_height * self.sd.tank_footprint * WATER_DENSITY for x in range(self.sd.no_of_layers)]
         )
@@ -96,18 +99,22 @@ class StorageCalculator:
         if discharging_mass > 0:
             return True
 
-    def set_charging_mass(self, massflow=0, time_step=0):
-        self.sd.charging_mass = massflow * time_step
+    def set_charging_mass(self, massflow=0):
+        """Set the charging mass of the storage."""
+        self.sd.charging_mass = massflow * self.sd.time_step
 
-    def set_discharging_mass(self, massflow=0, time_step=0):
+    def set_discharging_mass(self, massflow=0):
         self.sd.discharging_massflow = massflow
-        self.sd.discharging_mass = self.sd.discharging_massflow * time_step
+        self.sd.discharging_mass = self.sd.discharging_massflow * self.sd.time_step
 
-    def charge_storage(self):
-        """SHOULD THIS METHOD BE GENERIC? AND ABLE TO SET CHARING ENTHALPY EQUAL TO 0"""
-        self.sd.charging_enthalpy = np.array(
-            [self.sd.charging_mass * WATER_HEAT_CAPACITY * celsius_to_kelvin(self.sd.charging_temp)]
-        )
+    def charge_storage(self, charging_temp=None):
+        """Calculate charing enthalpy based on charging temperature in degrees Kelvin. If no charging temperature is provided, the default value is used."""
+        if charging_temp:
+            self.sd.charging_enthalpy = np.array([self.sd.charging_mass * WATER_HEAT_CAPACITY * charging_temp])
+        else:
+            self.sd.charging_enthalpy = np.array(
+                [self.sd.charging_mass * WATER_HEAT_CAPACITY * celsius_to_kelvin(self.sd.charging_temp)]
+            )
 
     def calc_charging_enthalpy(self, charging_temp_lift: float, charged_by_pvt: bool):
         if charged_by_pvt:
@@ -129,6 +136,7 @@ class StorageCalculator:
             )
 
     def calc_discharging_enthalpy(self, discharging_temp_reduction: float):
+        self.sd.boiler_needed = False
         if celsius_to_kelvin(self.sd.discharging_min_return_water_temp) > (
             self.sd.sl_temps[0] - discharging_temp_reduction
         ):
@@ -151,6 +159,7 @@ class StorageCalculator:
         self.sd.sl_temps_across_time[repetition_period, tstep, :] = kelvin_to_celsius(self.sd.sl_temps)
 
     def calc_layer_enthalpy_change_charging(self):
+        """Calculates the amount of enthalpy being added to each layer by addition of the charging mass within the current timestep"""
         for i, (av, bv) in enumerate(zip(self.sd.sl_mass, self.sd.sl_temps)):
             self.sd.sl_enthalpy_added[i] = self.sd.charging_mass * bv * WATER_HEAT_CAPACITY
             self.sd.sl_enthalpy_rest[i] = (av - self.sd.charging_mass) * bv * WATER_HEAT_CAPACITY
@@ -212,9 +221,12 @@ class StorageCalculator:
     def reorder_layer_temps(self):
         self.sd.sl_temps = np.sort(self.sd.sl_temps)[::-1]
 
-    def check_capacity(self):
-        """Returns fraction of utilised storage capacity"""
-        return kelvin_to_celsius(np.mean(self.sd.sl_temps)) / self.sd.charging_temp
+    def check_capacity(self, charging_temp=None):
+        """Returns fraction of utilised storage capacity based on the available charging temp."""
+        if charging_temp:
+            return kelvin_to_celsius(np.mean(self.sd.sl_temps)) / charging_temp
+        else:
+            return kelvin_to_celsius(np.mean(self.sd.sl_temps)) / self.sd.charging_temp
 
     def charge_layers(self, layer_weighting: np.ndarray, charging_enthalpy: float):
         """Add charging enthalpy to layers according to weighting array"""

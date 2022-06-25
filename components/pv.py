@@ -24,6 +24,7 @@ class PV:
         self.solar_azimuth: np.ndarray
         self.solar_irrad: np.ndarray
         self.solar_energy: np.ndarray
+        self.solar_power: np.ndarray
 
         # time resolution data from simulator class
         self.time_step = simulator.time_step
@@ -148,5 +149,9 @@ class PV:
         )
 
     def calc_solar_energy(self):
-        """solar enthalpy at current timestep."""
+        """solar energy for current timestep."""
         self.solar_energy = self.solar_irrad * self.time_step * self.cell_efficiency
+
+    def calc_solar_power(self):
+        """solar power during current timestep."""
+        self.solar_power = self.solar_irrad * self.cell_efficiency

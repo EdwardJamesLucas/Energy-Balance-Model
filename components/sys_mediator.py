@@ -43,16 +43,6 @@ class SysMediator:
         self.connection_pv_hp = df.connection_pv_hp[0]
         self.city = df.city[0]
 
-        # Storage charging strategy
-        if df.storage_charging_strategy[0] == "equally distributed":
-            self.storage_charging_strategy = np.array(
-                [1 / self.sc.sd.no_of_layers for x in range(self.sc.sd.no_of_layers)]
-            )
-        elif df.storage_charging_strategy[0] == "top layer":
-            self.storage_charging_strategy = np.array([1] + [0 for x in range(self.sc.sd.no_of_layers - 1)])
-        elif df.storage_charging_strategy[0] == "bottom layer":
-            self.storage_charging_strategy = np.array([0 for x in range(self.sc.sd.no_of_layers - 1)] + [1])
-
         # Simulation properties
         self.no_of_time_steps = simulator.no_of_time_steps
         self.repetition_period = simulator.repetition_period
@@ -71,14 +61,16 @@ class SysMediator:
     def print_system_layout(self):
         """Helper function to indicate component interaction. Will be removed in final version."""
         if self.pvt_charges_storage:
-            print("PVT is charging storage when able")
+            print("PVT is charging storage when able.")
         if self.house_discharges_storage:
-            print("House is discharging storage when able")
+            print("House is discharging storage when able.")
+        if self.hp_charges_storage:
+            print("Heat Pump charges storage when able.")
 
     def charge_storage_with_pvt(self, tstep):
         """Charges storage if HTF is hotter than top layer temperature; otherwise recirculates HTF"""
         if self.pvtc.check_htf_temp(self.sc.sd.sl_temps[0], tstep):
-            self.sc.set_charging_mass(self.pvtc.pvt.massflow, self.time_step)
+            self.sc.set_charging_mass(self.pvtc.pvt.massflow)
             self.sc.charge_storage()
             self.pvtc.replenish_htf(self.sc.sd.sl_temps[-1])
             self.sc.calc_layer_enthalpy_change_charging()
@@ -89,16 +81,18 @@ class SysMediator:
 
     def discharge_storage_with_house(self, tstep):
         """Method to discharge storage using current massflow to, and temperature drop across, House"""
-        self.sc.set_discharging_mass(self.hc.hd.massflow[tstep], self.time_step)
+        self.sc.set_discharging_mass(self.hc.hd.massflow[tstep])
         self.sc.calc_discharging_enthalpy(self.hc.hd.temp_drop)
         self.sc.calc_layer_enthalpy_change_discharging()
 
     def charge_storage_with_hp(self, ambient_temps, tstep):
         """Adjust charging enthalpy with heat from heat pump"""
-        self.hp.calc_cop(celsius_to_kelvin(ambient_temps[tstep]), self.sc.sd.sl_temps[-1])
-        hp_heat = self.hp.run_heatpump(self.pv.solar_energy[tstep])
+
         if self.sc.check_capacity() < 0.95:
-            self.sc.charge_layers(self.storage_charging_strategy, hp_heat)
+            self.hp.run_heatpump(ambient_temps[tstep], self.sc.sd.sl_temps[-1], self.pv.solar_power[tstep])
+            self.sc.set_charging_mass(self.hp.massflow)
+            self.sc.charge_storage(self.hp.condenser_temp)
+            self.sc.calc_layer_enthalpy_change_charging()
 
     def energy_balance_storage(self, ambient_temps, tstep):
         """Conduct energy balance across storage to calculate new layer temperatures."""
@@ -136,6 +130,7 @@ class SysMediator:
         self.pv.calc_solar_geometry(self.time_steps)
         self.pv.calc_solar_irrad(direct_irrad, diffuse_irrad)
         self.pv.calc_solar_energy()
+        self.pv.calc_solar_power()
 
     def energy_balance_house(self, weather_data):
         """Energy balance across house based on heating demand to calculate mass flow of circulated storage media."""

@@ -13,7 +13,7 @@ import components.sys_mediator as sysm
 import components.weather as wth
 import components.simulator as sim
 
-from components.helper_funcs import read_variables, celsius_to_kelvin, kelvin_to_celsius
+from components.helper_funcs import read_variables, celsius_to_kelvin, kelvin_to_celsius, joules_to_kilowatthrs
 
 
 def main():
@@ -57,23 +57,17 @@ def main():
     print(f"Thermal Autarky set at: {house_data.autarky_thermal*100} %")
     print(f" Max massflow between house and storage: {round(max(house_data.massflow), 4)} kg/s")
 
-    track_hp_elec = []
-    track_cop = []
-
     # Time series simulation
     for repetition_period in range(system_mediator.repetition_period):
         for tstep in range(system_mediator.no_of_time_steps):
 
-            if repetition_period == 0:
-                track_hp_elec.append(system_mediator.hp.electricity_consumed())
-                track_cop.append(system_mediator.hp.cop)
-
             # Storage
             system_mediator.energy_balance_storage(weather_data.ambient_air_temps, tstep)
             system_mediator.record_sl_temps(tstep, repetition_period)
-            system_mediator.validate_energy_balance()
-            # if tstep == 1721:
-            #     break
+            if repetition_period == system_mediator.repetition_period - 1:
+                if system_mediator.sc.sd.boiler_needed:
+                    system_mediator.sc.sd.boiler_needed_at_equilibrium = True
+                system_mediator.validate_energy_balance()
 
     # Plots and print-outs
     show_plot = True
@@ -99,20 +93,13 @@ def main():
         plt.ylabel("Layer temperature (degC)")
         plt.show()
         print(
-            f"{round(system_mediator.validation_storage_eb_losses/3600000)} kWh Storage losses.",
-            f"{round(system_mediator.validation_storage_eb_discharged/3600000)} kWh discharged.",
-            f"{round(system_mediator.validation_storage_eb_charged/3600000)} kWh charged.",
-            f"{round((system_mediator.validation_storage_eb_charged+system_mediator.validation_storage_eb_losses+system_mediator.validation_storage_eb_discharged)/3600000)} kWh Difference.",
+            f"{round(joules_to_kilowatthrs(system_mediator.validation_storage_eb_losses))} kWh Storage losses.",
+            f"{round(joules_to_kilowatthrs(system_mediator.validation_storage_eb_discharged))} kWh discharged.",
+            f"{round(joules_to_kilowatthrs(system_mediator.validation_storage_eb_charged))} kWh charged.",
+            f"{round(joules_to_kilowatthrs((system_mediator.validation_storage_eb_charged+system_mediator.validation_storage_eb_losses+system_mediator.validation_storage_eb_discharged)))} kWh Difference.",
             f"Average Tank Temp: {round(np.mean(storage_data.sl_temps_across_time),1)}",
-            f"Boiler required: {storage_data.boiler_needed}",
+            f"Boiler required: {system_mediator.sc.sd.boiler_needed_at_equilibrium}",
         )
-
-    plt.plot(system_mediator.pv.solar_energy)
-    plt.plot(track_hp_elec)
-    plt.show()
-
-    plt.plot(track_cop)
-    plt.show()
 
 
 if __name__ == "__main__":
